@@ -4,19 +4,19 @@
   <meta charset="UTF-8">
   <meta name="viewport" content="width=device-width, initial-scale=1.0, maximum-scale=1.0, user-scalable=no, viewport-fit=cover">
   
-  <!-- iOS Web App 全螢幕與圖示設定 -->
+  <!-- iOS Web App 全螢幕與主畫面圖示設定 -->
   <meta name="apple-mobile-web-app-capable" content="yes">
   <meta name="apple-mobile-web-app-status-bar-style" content="default">
   <meta name="apple-mobile-web-app-title" content="巴士天氣">
   <meta name="theme-color" content="#ffffff">
   
-  <!-- iOS 主畫面 App 圖示 (高清向量 SVG) -->
+  <!-- iOS 主畫面高清圖示 (黑底白文字標籤) -->
   <link rel="apple-touch-icon" href="data:image/svg+xml,<svg xmlns='http://www.w3.org/2000/svg' viewBox='0 0 512 512' style='background:%23000;'><text x='50%25' y='42%25' dominant-baseline='middle' text-anchor='middle' font-size='220' fill='%23fff'>🚌</text><text x='50%25' y='80%25' dominant-baseline='middle' text-anchor='middle' font-size='100' font-family='sans-serif' font-weight='900' fill='%23fff'>HK DASH</text></svg>">
 
   <title>iPhone 資訊板 (HK Weather & Bus)</title>
   
   <style>
-    /* 高對比現代極簡風格 (專為 iOS & iPhone 6.7吋大螢幕優化) */
+    /* 高對比極簡風格 (專為 iPhone / iOS 大螢幕與 Safe Area 優化) */
     :root {
       --bg: #ffffff;
       --fg: #000000;
@@ -308,6 +308,7 @@
   </footer>
 
   <script>
+    /* 解析 ISO 時間 (相容 iOS Safari) */
     function parseIsoDateToMs(isoStr) {
       if (!isoStr) return null;
       var match = isoStr.match(/^(\d{4})-(\d{2})-(\d{2})T(\d{2}):(\d{2}):(\d{2})/);
@@ -320,7 +321,8 @@
         var sec = parseInt(match[6], 10);
         return Date.UTC(year, month, day, hour - 8, min, sec);
       }
-      return new Date(isoStr).getTime();
+      var d = new Date(isoStr);
+      return isNaN(d.getTime()) ? null : d.getTime();
     }
 
     function updateClocks() {
@@ -335,6 +337,7 @@
       document.getElementById('live-date').innerText = dateStr;
     }
 
+    /* 香港天文台 API */
     function fetchHKOWeather() {
       var statusEl = document.getElementById('status-weather');
       
@@ -396,11 +399,12 @@
         });
     }
 
+    /* 九巴開放資料 API - 官方 stop-eta 雙重查詢 */
     var TARGET_BUSES = [
-      { route: '11D', destName: '觀塘碼頭', targetStopName: '侯王道', dir: 'O', resolvedStopId: '0E9FE19CD09903DE' },
-      { route: '1A', destName: '中秀茂坪 (經觀塘)', targetStopName: '侯王道', dir: 'O', resolvedStopId: '0E9FE19CD09903DE' },
-      { route: '42', destName: '順利', targetStopName: '大南西街', dir: 'O', resolvedStopId: '6947D76BCA8F85A2' },
-      { route: '1', destName: '尖沙咀碼頭', targetStopName: '太子道西', dir: 'O', resolvedStopId: '13B1C568DFDA12EA' }
+      { route: '11D', destName: '觀塘碼頭', keyword: '侯王道', stopId: '0E9FE19CD09903DE' },
+      { route: '1A', destName: '中秀茂坪 (經觀塘)', keyword: '侯王道', stopId: '0E9FE19CD09903DE' },
+      { route: '42', destName: '順利', keyword: '大南西街', stopId: '6947D76BCA8F85A2' },
+      { route: '1', destName: '尖沙咀碼頭', keyword: '太子道西', stopId: '13B1C568DFDA12EA' }
     ];
 
     function resolveBusStops() {
@@ -411,7 +415,7 @@
           .then(function(data) {
             if (data && data.data) {
               var stops = data.data;
-              var stopPromises = stops.map(function(s) {
+              var stopPromises = stops.slice(0, 20).map(function(s) {
                 return fetch('https://data.etabus.gov.hk/v1/transport/kmb/stop/' + s.stop)
                   .then(function(r) { return r.json(); })
                   .then(function(sData) {
@@ -422,10 +426,10 @@
 
               return Promise.all(stopPromises).then(function(stopList) {
                 var found = stopList.find(function(item) {
-                  return item && item.name && item.name.indexOf(bus.targetStopName) !== -1;
+                  return item && item.name && item.name.indexOf(bus.keyword) !== -1;
                 });
                 if (found) {
-                  bus.resolvedStopId = found.stopId;
+                  bus.stopId = found.stopId;
                 }
               });
             }
@@ -437,18 +441,36 @@
     }
 
     function fetchSingleBusETA(bus) {
-      var url = 'https://data.etabus.gov.hk/v1/transport/kmb/eta/' + bus.resolvedStopId + '/' + bus.route + '/1';
+      // 官方標準 stop-eta API 接口
+      var stopEtaUrl = 'https://data.etabus.gov.hk/v1/transport/kmb/stop-eta/' + bus.stopId;
+      var routeEtaUrl = 'https://data.etabus.gov.hk/v1/transport/kmb/route-eta/' + bus.route + '/1';
 
-      return fetch(url)
+      return fetch(stopEtaUrl)
         .then(function(res) { return res.json(); })
-        .then(function(json) {
+        .then(function(data) {
           var etas = [];
-          if (json && json.data) {
-            etas = json.data.filter(function(item) {
-              return item.dir === bus.dir && item.eta;
+          if (data && data.data && data.data.length > 0) {
+            etas = data.data.filter(function(item) {
+              return item.route === bus.route && item.eta;
             });
           }
-          return { bus: bus, etas: etas };
+
+          if (etas.length > 0) {
+            return { bus: bus, etas: etas };
+          }
+
+          // 備援查詢方案 route-eta
+          return fetch(routeEtaUrl)
+            .then(function(r) { return r.json(); })
+            .then(function(rData) {
+              var rEtas = [];
+              if (rData && rData.data) {
+                rEtas = rData.data.filter(function(item) {
+                  return (item.stop === bus.stopId || (item.dest_tc && item.dest_tc.indexOf(bus.destName.substring(0, 2)) !== -1)) && item.eta;
+                });
+              }
+              return { bus: bus, etas: rEtas };
+            });
         })
         .catch(function(err) {
           console.error('Fetch ETA error for ' + bus.route, err);
@@ -505,7 +527,7 @@
                     '<div class="bus-route-badge">' + bus.route + '</div>' +
                     '<div class="bus-dest-info">' +
                       '<div class="bus-dest-title">往 ' + bus.destName + '</div>' +
-                      '<div class="bus-stop-name">上車點: ' + bus.targetStopName + '</div>' +
+                      '<div class="bus-stop-name">上車點: ' + bus.keyword + '</div>' +
                     '</div>' +
                     '<div class="bus-eta-display">' +
                       '<div class="bus-eta-main">' + primaryStr + '</div>' +
@@ -525,6 +547,7 @@
       });
     }
 
+    /* 計時與自動更新 (巴士每 60 秒，天氣每 15 分鐘) */
     var busTimerCountdown = 60;
 
     function startAutoTimers() {
