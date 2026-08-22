@@ -200,7 +200,7 @@
     }
 
     .bus-stop-name {
-      font-size: 0.85rem;
+      font-size: 0.82rem;
       font-weight: 700;
       margin-top: 2px;
       opacity: 0.85;
@@ -250,6 +250,33 @@
       font-weight: 800;
       font-family: var(--font-mono);
     }
+
+    /* 除錯日誌面板 */
+    .debug-panel {
+      margin-top: 10px;
+      border: 1px dashed #000;
+      border-radius: 8px;
+      padding: 8px;
+      font-size: 0.72rem;
+      font-family: var(--font-mono);
+      background-color: #fafafa;
+    }
+
+    .debug-title {
+      font-weight: bold;
+      cursor: pointer;
+      display: flex;
+      justify-content: space-between;
+    }
+
+    .debug-content {
+      display: none;
+      margin-top: 6px;
+      white-space: pre-wrap;
+      word-break: break-all;
+      max-height: 150px;
+      overflow-y: auto;
+    }
   </style>
 </head>
 <body>
@@ -297,7 +324,16 @@
     </div>
 
     <div id="bus-list-container" class="bus-list">
-      <div style="padding: 15px; text-align: center; font-weight: bold;">正在連線至九巴 API...</div>
+      <div style="padding: 15px; text-align: center; font-weight: bold;">正在初始化車站目錄與九巴 API...</div>
+    </div>
+
+    <!-- 可折疊除錯面板 -->
+    <div class="debug-panel">
+      <div class="debug-title" onclick="toggleDebug()">
+        <span>🛠️ 展開 API 偵錯資訊</span>
+        <span id="debug-arrow">▼</span>
+      </div>
+      <div id="debug-content" class="debug-content">初始化中...</div>
     </div>
   </section>
 
@@ -308,23 +344,31 @@
   </footer>
 
   <script>
-    /* 解析 ISO 時間 (相容 iOS Safari) */
-    function parseIsoDateToMs(isoStr) {
-      if (!isoStr) return null;
-      var match = isoStr.match(/^(\d{4})-(\d{2})-(\d{2})T(\d{2}):(\d{2}):(\d{2})/);
-      if (match) {
-        var year = parseInt(match[1], 10);
-        var month = parseInt(match[2], 10) - 1;
-        var day = parseInt(match[3], 10);
-        var hour = parseInt(match[4], 10);
-        var min = parseInt(match[5], 10);
-        var sec = parseInt(match[6], 10);
-        return Date.UTC(year, month, day, hour - 8, min, sec);
-      }
-      var d = new Date(isoStr);
-      return isNaN(d.getTime()) ? null : d.getTime();
+    /* 全局變數：記憶體內的車站對照表與日誌 */
+    var stopMap = {};
+    var debugLogs = [];
+
+    function logDebug(msg) {
+      var t = new Date().toLocaleTimeString();
+      debugLogs.unshift('[' + t + '] ' + msg);
+      if (debugLogs.length > 20) debugLogs.pop();
+      var el = document.getElementById('debug-content');
+      if (el) el.innerText = debugLogs.join('\n');
     }
 
+    function toggleDebug() {
+      var content = document.getElementById('debug-content');
+      var arrow = document.getElementById('debug-arrow');
+      if (content.style.display === 'block') {
+        content.style.display = 'none';
+        arrow.innerText = '▼';
+      } else {
+        content.style.display = 'block';
+        arrow.innerText = '▲';
+      }
+    }
+
+    /* 1. 時鐘與日期更新 */
     function updateClocks() {
       var now = new Date();
       var hours = String(now.getHours()).padStart(2, '0');
@@ -337,7 +381,7 @@
       document.getElementById('live-date').innerText = dateStr;
     }
 
-    /* 香港天文台 API */
+    /* 2. 香港天文台 API */
     function fetchHKOWeather() {
       var statusEl = document.getElementById('status-weather');
       
@@ -399,82 +443,160 @@
         });
     }
 
-    /* 九巴開放資料 API - 官方 stop-eta 雙重查詢 */
-    var TARGET_BUSES = [
-      { route: '11D', destName: '觀塘碼頭', keyword: '侯王道', stopId: '0E9FE19CD09903DE' },
-      { route: '1A', destName: '中秀茂坪 (經觀塘)', keyword: '侯王道', stopId: '0E9FE19CD09903DE' },
-      { route: '42', destName: '順利', keyword: '大南西街', stopId: '6947D76BCA8F85A2' },
-      { route: '1', destName: '尖沙咀碼頭', keyword: '太子道西', stopId: '13B1C568DFDA12EA' }
+    /* 3. 九巴 API - 智慧車站對照與雙管道 ETA 查詢 */
+
+    var ROUTE_TARGETS = [
+      {
+        id: '11D',
+        route: '11D',
+        destName: '觀塘碼頭',
+        keywords: ['侯王道', '太子道東', '九龍城'],
+        bound: 'outbound',
+        fallbackStopIds: ['0E9FE19CD09903DE', 'B128BDDDBA61BB32', 'D7B547DE36A78519']
+      },
+      {
+        id: '1A',
+        route: '1A',
+        destName: '中秀茂坪 (經觀塘)',
+        keywords: ['侯王道', '太子道東', '九龍城'],
+        bound: 'outbound',
+        fallbackStopIds: ['0E9FE19CD09903DE', 'B128BDDDBA61BB32', 'D7B547DE36A78519']
+      },
+      {
+        id: '42',
+        route: '42',
+        destName: '順利',
+        keywords: ['大南西街', '光昌街', '長沙灣'],
+        bound: 'outbound',
+        fallbackStopIds: ['6947D76BCA8F85A2', 'FA2CD28EE6E0FB5D', 'A71D57C5A3FB8FB0']
+      },
+      {
+        id: '1',
+        route: '1',
+        destName: '尖沙咀碼頭',
+        keywords: ['太子道西', '伯爵街', '聖德肋撒堂', '基堤道', '喇沙利道'],
+        bound: 'outbound',
+        fallbackStopIds: ['13B1C568DFDA12EA', '0183141F9C110C90', 'B302F97539B66FE3', 'C8A184DDF67B0D18']
+      }
     ];
 
-    function resolveBusStops() {
-      var promises = TARGET_BUSES.map(function(bus) {
-        var routeStopUrl = 'https://data.etabus.gov.hk/v1/transport/kmb/route-stop/' + bus.route + '/outbound/1';
-        return fetch(routeStopUrl)
-          .then(function(res) { return res.json(); })
-          .then(function(data) {
-            if (data && data.data) {
-              var stops = data.data;
-              var stopPromises = stops.slice(0, 20).map(function(s) {
-                return fetch('https://data.etabus.gov.hk/v1/transport/kmb/stop/' + s.stop)
-                  .then(function(r) { return r.json(); })
-                  .then(function(sData) {
-                    return { stopId: s.stop, name: sData.data ? sData.data.name_tc : '' };
-                  })
-                  .catch(function() { return null; });
-              });
-
-              return Promise.all(stopPromises).then(function(stopList) {
-                var found = stopList.find(function(item) {
-                  return item && item.name && item.name.indexOf(bus.keyword) !== -1;
-                });
-                if (found) {
-                  bus.stopId = found.stopId;
-                }
-              });
-            }
-          })
-          .catch(function(e) { console.warn('Resolve stop error for ' + bus.route, e); });
-      });
-
-      return Promise.all(promises);
-    }
-
-    function fetchSingleBusETA(bus) {
-      // 官方標準 stop-eta API 接口
-      var stopEtaUrl = 'https://data.etabus.gov.hk/v1/transport/kmb/stop-eta/' + bus.stopId;
-      var routeEtaUrl = 'https://data.etabus.gov.hk/v1/transport/kmb/route-eta/' + bus.route + '/1';
-
-      return fetch(stopEtaUrl)
+    // 載入全港車站名稱對照表 (只執行 1 次)
+    function initStopMap() {
+      if (Object.keys(stopMap).length > 0) return Promise.resolve();
+      logDebug('正從九巴 API 下載車站目錄...');
+      return fetch('https://data.etabus.gov.hk/v1/transport/kmb/stop')
         .then(function(res) { return res.json(); })
-        .then(function(data) {
-          var etas = [];
-          if (data && data.data && data.data.length > 0) {
-            etas = data.data.filter(function(item) {
-              return item.route === bus.route && item.eta;
+        .then(function(json) {
+          if (json && json.data) {
+            json.data.forEach(function(item) {
+              stopMap[item.stop] = item.name_tc;
             });
+            logDebug('車站目錄下載成功，共 ' + Object.keys(stopMap).length + ' 個車站');
           }
-
-          if (etas.length > 0) {
-            return { bus: bus, etas: etas };
-          }
-
-          // 備援查詢方案 route-eta
-          return fetch(routeEtaUrl)
-            .then(function(r) { return r.json(); })
-            .then(function(rData) {
-              var rEtas = [];
-              if (rData && rData.data) {
-                rEtas = rData.data.filter(function(item) {
-                  return (item.stop === bus.stopId || (item.dest_tc && item.dest_tc.indexOf(bus.destName.substring(0, 2)) !== -1)) && item.eta;
-                });
-              }
-              return { bus: bus, etas: rEtas };
-            });
         })
         .catch(function(err) {
-          console.error('Fetch ETA error for ' + bus.route, err);
-          return { bus: bus, etas: [] };
+          logDebug('目錄下載失敗 (將採用備用車站 Hash): ' + err.message);
+        });
+    }
+
+    // 計算剩餘分鐘數 (相容 iOS Safari)
+    function parseMinutes(etaStr) {
+      if (!etaStr) return null;
+      var clean = String(etaStr).trim();
+      var ms = Date.parse(clean);
+      if (isNaN(ms)) {
+        var match = clean.match(/^(\d{4})-(\d{2})-(\d{2})T(\d{2}):(\d{2}):(\d{2})/);
+        if (match) {
+          ms = Date.UTC(
+            parseInt(match[1], 10),
+            parseInt(match[2], 10) - 1,
+            parseInt(match[3], 10),
+            parseInt(match[4], 10) - 8,
+            parseInt(match[5], 10),
+            parseInt(match[6], 10)
+          );
+        }
+      }
+      if (isNaN(ms) || !ms) return null;
+      var now = Date.now();
+      return Math.floor((ms - now) / 60000);
+    }
+
+    // 抓取單一巴士路線
+    function fetchRouteETA(target) {
+      logDebug('開始查詢路線 ' + target.route + '...');
+      
+      // 1. 優先向九巴查詢該路線的車站列表以精確匹配 Stop ID
+      var routeStopUrl = 'https://data.etabus.gov.hk/v1/transport/kmb/route-stop/' + target.route + '/' + target.bound + '/1';
+      
+      return fetch(routeStopUrl)
+        .then(function(res) { return res.json(); })
+        .then(function(json) {
+          var matchedStopId = null;
+          var matchedStopName = '';
+
+          if (json && json.data && json.data.length > 0) {
+            // 在該路線的車站列表中尋找關鍵字
+            for (var i = 0; i < json.data.length; i++) {
+              var sId = json.data[i].stop;
+              var name = stopMap[sId] || '';
+              var hit = target.keywords.some(function(kw) { return name.indexOf(kw) !== -1; });
+              if (hit) {
+                matchedStopId = sId;
+                matchedStopName = name;
+                break;
+              }
+            }
+          }
+
+          var candidateStopIds = matchedStopId ? [matchedStopId] : target.fallbackStopIds;
+          var displayStopName = matchedStopName || target.keywords[0];
+
+          // 2. 雙管道併行發起 Stop-ETA 與 Route-ETA 查詢
+          var promises = [];
+
+          // 管道 A: Stop-ETA
+          candidateStopIds.forEach(function(sId) {
+            var url = 'https://data.etabus.gov.hk/v1/transport/kmb/stop-eta/' + sId;
+            promises.push(
+              fetch(url)
+                .then(function(r) { return r.json(); })
+                .then(function(d) {
+                  return (d && d.data) ? d.data.filter(function(x) { return x.route === target.route && x.eta; }) : [];
+                })
+                .catch(function() { return []; })
+            );
+          });
+
+          // 管道 B: Route-ETA 備援
+          var routeEtaUrl = 'https://data.etabus.gov.hk/v1/transport/kmb/route-eta/' + target.route + '/1';
+          promises.push(
+            fetch(routeEtaUrl)
+              .then(function(r) { return r.json(); })
+              .then(function(d) {
+                return (d && d.data) ? d.data.filter(function(x) { return candidateStopIds.indexOf(x.stop) !== -1 && x.eta; }) : [];
+              })
+              .catch(function() { return []; })
+          );
+
+          return Promise.all(promises).then(function(resultsArray) {
+            var rawEtas = [];
+            resultsArray.forEach(function(arr) {
+              if (Array.isArray(arr)) rawEtas = rawEtas.concat(arr);
+            });
+
+            logDebug('路線 ' + target.route + ' 成功抓取 ' + rawEtas.length + ' 筆原始 ETA 數據');
+
+            return {
+              target: target,
+              stopName: displayStopName,
+              rawEtas: rawEtas
+            };
+          });
+        })
+        .catch(function(err) {
+          logDebug('路線 ' + target.route + ' 查詢異常: ' + err.message);
+          return { target: target, stopName: target.keywords[0], rawEtas: [] };
         });
     }
 
@@ -482,72 +604,81 @@
       var statusEl = document.getElementById('status-bus');
       var container = document.getElementById('bus-list-container');
 
-      var promises = TARGET_BUSES.map(fetchSingleBusETA);
+      initStopMap().then(function() {
+        var promises = ROUTE_TARGETS.map(fetchRouteETA);
 
-      Promise.all(promises).then(function(results) {
-        var html = '';
-        var nowMs = Date.now();
+        Promise.all(promises).then(function(results) {
+          var html = '';
 
-        results.forEach(function(resItem) {
-          var bus = resItem.bus;
-          var rawEtas = resItem.etas;
+          results.forEach(function(resItem) {
+            var target = resItem.target;
+            var stopName = resItem.stopName;
+            var rawEtas = resItem.rawEtas || [];
 
-          var validEtas = [];
-          rawEtas.forEach(function(e) {
-            var etaMs = parseIsoDateToMs(e.eta);
-            if (etaMs && etaMs >= (nowMs - 30000)) {
-              var diffMins = Math.max(0, Math.floor((etaMs - nowMs) / 60000));
-              validEtas.push({
-                mins: diffMins,
-                rmk: e.rmk_tc || ''
-              });
+            var validList = [];
+            var timeDedupe = {};
+
+            rawEtas.forEach(function(e) {
+              var mins = parseMinutes(e.eta);
+              if (mins !== null && mins >= -2) { // 包含即將到站（-2分鐘內）至未來車次
+                var displayMins = Math.max(0, mins);
+                var key = displayMins + '_' + (e.rmk_tc || '');
+                if (!timeDedupe[key]) {
+                  timeDedupe[key] = true;
+                  validList.push({
+                    mins: displayMins,
+                    rmk: e.rmk_tc || ''
+                  });
+                }
+              }
+            });
+
+            validList.sort(function(a, b) { return a.mins - b.mins; });
+
+            var primaryStr = '未有即時班次';
+            var subStr = '請參閱現場告示或九巴 App';
+
+            if (validList.length > 0) {
+              var first = validList[0];
+              primaryStr = (first.mins === 0) ? '即將到站' : (first.mins + ' 分鐘');
+              if (first.rmk) primaryStr += ' (' + first.rmk + ')';
+
+              if (validList.length > 1) {
+                var second = validList[1];
+                var secStr = (second.mins === 0) ? '即將到站' : (second.mins + ' 分鐘');
+                subStr = '下一班: ' + secStr;
+                if (second.rmk) subStr += ' (' + second.rmk + ')';
+              } else {
+                subStr = '暫未有下一班預測';
+              }
             }
+
+            html += '<div class="bus-card">' +
+                      '<div class="bus-route-badge">' + target.route + '</div>' +
+                      '<div class="bus-dest-info">' +
+                        '<div class="bus-dest-title">往 ' + target.destName + '</div>' +
+                        '<div class="bus-stop-name">上車點: ' + stopName + '</div>' +
+                      '</div>' +
+                      '<div class="bus-eta-display">' +
+                        '<div class="bus-eta-main">' + primaryStr + '</div>' +
+                        '<div class="bus-eta-sub">' + subStr + '</div>' +
+                      '</div>' +
+                    '</div>';
           });
 
-          validEtas.sort(function(a, b) { return a.mins - b.mins; });
+          container.innerHTML = html || '<div style="padding:15px; text-align:center;">未能連線至九巴 API</div>';
 
-          var primaryStr = '未有即時班次';
-          var subStr = '請留意現場告示';
-
-          if (validEtas.length > 0) {
-            var first = validEtas[0];
-            primaryStr = (first.mins === 0) ? '即將到站' : (first.mins + ' 分鐘');
-            if (first.rmk) primaryStr += ' (' + first.rmk + ')';
-
-            if (validEtas.length > 1) {
-              var second = validEtas[1];
-              subStr = '下一班: ' + second.mins + ' 分鐘';
-              if (second.rmk) subStr += ' (' + second.rmk + ')';
-            } else {
-              subStr = '暫未有下一班預測';
-            }
-          }
-
-          html += '<div class="bus-card">' +
-                    '<div class="bus-route-badge">' + bus.route + '</div>' +
-                    '<div class="bus-dest-info">' +
-                      '<div class="bus-dest-title">往 ' + bus.destName + '</div>' +
-                      '<div class="bus-stop-name">上車點: ' + bus.keyword + '</div>' +
-                    '</div>' +
-                    '<div class="bus-eta-display">' +
-                      '<div class="bus-eta-main">' + primaryStr + '</div>' +
-                      '<div class="bus-eta-sub">' + subStr + '</div>' +
-                    '</div>' +
-                  '</div>';
+          var now = new Date();
+          var timeStr = String(now.getHours()).padStart(2, '0') + ':' + String(now.getMinutes()).padStart(2, '0') + ':' + String(now.getSeconds()).padStart(2, '0');
+          statusEl.innerText = '巴士更新: ' + timeStr;
+        }).catch(function(err) {
+          logDebug('巴士清單渲染錯誤: ' + err.message);
+          statusEl.innerText = '巴士更新失敗';
         });
-
-        container.innerHTML = html || '<div style="padding:15px; text-align:center;">未成功抓取到巴士班次數據</div>';
-
-        var now = new Date();
-        var timeStr = String(now.getHours()).padStart(2, '0') + ':' + String(now.getMinutes()).padStart(2, '0') + ':' + String(now.getSeconds()).padStart(2, '0');
-        statusEl.innerText = '巴士更新: ' + timeStr;
-      }).catch(function(err) {
-        console.error('Bus render error:', err);
-        statusEl.innerText = '巴士更新失敗';
       });
     }
 
-    /* 計時與自動更新 (巴士每 60 秒，天氣每 15 分鐘) */
+    /* 4. 自動更新計時器 (巴士 60s / 天氣 15分鐘) */
     var busTimerCountdown = 60;
 
     function startAutoTimers() {
@@ -576,11 +707,7 @@
     window.onload = function() {
       updateClocks();
       fetchHKOWeather();
-      
-      resolveBusStops().then(function() {
-        updateBusETA();
-      });
-
+      updateBusETA();
       startAutoTimers();
     };
   </script>
